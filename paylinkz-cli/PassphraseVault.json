@@ -1,7 +1,7 @@
 {
     "_format": "hh-sol-artifact-1",
     "contractName": "PassphraseVault",
-    "sourceName": "contracts/Vault.sol",
+    "sourceName": "contracts/PassphraseVault.sol",
     "abi": [
       {
         "anonymous": false,
@@ -331,4 +331,3 @@
     "linkReferences": {},
     "deployedLinkReferences": {}
   }
-  
