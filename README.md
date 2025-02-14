@@ -39,3 +39,12 @@ Supported Networks
 ```shell
 npx hardhat test
 ```
+
+### Deploy and Verify
+
+```shell
+npx hardhat run scripts/deploy-and-verify.js --network inksepolia
+npx hardhat verify --network inksepolia 0xD841Ca6D5D1B6c5e61CaC834c5C064681CfCF40B
+
+npx hardhat run scripts/deploy-and-verify.js --network ink
+```

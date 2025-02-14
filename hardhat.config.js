@@ -9,10 +9,15 @@ module.exports = {
       url: process.env.INK_SEPOLIA_URL || "",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
+    ink: {
+      url: process.env.INK_URL || "",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    },
   },
   etherscan: {
     apiKey: {
       inksepolia: process.env.BLOCKSCOUT_API_KEY,
+      ink: process.env.BLOCKSCOUT_API_KEY,
     },
     customChains: [
       {
@@ -22,6 +27,13 @@ module.exports = {
           apiURL: "https://explorer-sepolia.inkonchain.com/api",
           browserURL: "https://explorer-sepolia.inkonchain.com/",
         },
+      },
+      {
+        network: "ink",
+        chainId: 57073,
+        urls: {
+          apiURL: "https://explorer.inkonchain.com/api",
+          browserURL: "https://explorer.inkonchain.com/",
       },
     ],
   },
