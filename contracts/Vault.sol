@@ -33,10 +33,11 @@ contract PassphraseVault {
     event Claimed(address indexed destination, address indexed token, uint256 amount, bytes32 indexed depositId);
     event Refunded(address indexed depositor, address indexed token, uint256 amount, bytes32 indexed depositId);
 
-    function deposit(address token, uint256 amount, string memory passphrase, uint256 unlockTime) external {
-        require(unlockTime > block.timestamp, "Unlock time must be in the future");
+    function deposit(address token, uint256 amount, bytes32 passphraseHash, uint256 unlockTime) external {
+        if (unlockTime != 0) {
+            require(unlockTime > block.timestamp, "Unlock time must be in the future");
+        }
 
-        bytes32 passphraseHash = keccak256(abi.encodePacked(passphrase));
         bytes32 depositId = keccak256(abi.encodePacked(msg.sender, token, amount, passphraseHash, unlockTime));
 
         deposits[depositId] = Deposit({
@@ -57,7 +58,9 @@ contract PassphraseVault {
     function claim(bytes32 depositId, bytes32 claimHash) external {
         Deposit storage deposit = deposits[depositId];
         require(deposit.amount > 0, "No deposit found");
-        require(block.timestamp >= deposit.unlockTime, "Vault is locked");
+        if (deposit.unlockTime != 0) {
+            require(block.timestamp >= deposit.unlockTime, "Vault is locked");
+        }
         require(!deposit.claimed, "Already claimed");
 
         claims[depositId] = ClaimRequest({
@@ -107,5 +110,24 @@ contract PassphraseVault {
 
     function getDepositorDeposits(address depositor) external view returns (bytes32[] memory) {
         return depositorDeposits[depositor];
+    }
+
+    function getDepositDetails(bytes32 depositId) external view returns (
+        address depositor,
+        address token,
+        uint256 amount,
+        bytes32 passphraseHash,
+        uint256 unlockTime,
+        bool claimed
+    ) {
+        Deposit storage deposit = deposits[depositId];
+        return (
+            deposit.depositor,
+            deposit.token,
+            deposit.amount,
+            deposit.passphraseHash,
+            deposit.unlockTime,
+            deposit.claimed
+        );
     }
 }
