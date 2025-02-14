@@ -34,6 +34,7 @@ module.exports = {
         urls: {
           apiURL: "https://explorer.inkonchain.com/api",
           browserURL: "https://explorer.inkonchain.com/",
+        },
       },
     ],
   },
