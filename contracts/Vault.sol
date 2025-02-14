@@ -1,133 +1,141 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
-import "hardhat/console.sol";
+pragma solidity ^0.8.20;
 
-interface IERC20 {
-    function transfer(address recipient, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-}
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract PassphraseVault {
+contract Vault is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     struct Deposit {
         address depositor;
         address token;
         uint256 amount;
         bytes32 passphraseHash;
-        uint256 unlockTime;
-        bool claimed; // Prevent re-entrancy
+        bool claimed;
+        mapping(address => CommitInfo) commits;  // Track commits per address
     }
 
-    struct ClaimRequest {
-        address claimant;
-        bytes32 claimHash;
-        bool exists;
+    struct CommitInfo {
+        bytes32 commitHash;
+        uint256 commitDeadline;
     }
 
-    mapping(bytes32 => Deposit) public deposits;
-    mapping(bytes32 => ClaimRequest) public claims;
-    mapping(address => bytes32[]) public depositorDeposits;
+    mapping(uint256 => Deposit) public deposits;
+    uint256 public nextDepositId;
 
-    event Deposited(address indexed depositor, address indexed token, uint256 amount, bytes32 indexed depositId, uint256 unlockTime);
-    event ClaimInitiated(address indexed claimant, bytes32 indexed depositId, bytes32 claimHash);
-    event Claimed(address indexed destination, address indexed token, uint256 amount, bytes32 indexed depositId);
-    event Refunded(address indexed depositor, address indexed token, uint256 amount, bytes32 indexed depositId);
+    // Add minimum commit delay
+    uint256 public constant MIN_COMMIT_DELAY = 2 minutes;
+    uint256 public constant COMMIT_DURATION = 10 minutes;
 
-    function deposit(address token, uint256 amount, bytes32 passphraseHash, uint256 unlockTime) external {
-        if (unlockTime != 0) {
-            require(unlockTime > block.timestamp, "Unlock time must be in the future");
-        }
+    event DepositCreated(
+        uint256 indexed depositId,
+        address indexed depositor,
+        address indexed token,
+        uint256 amount
+    );
+    event CommitSubmitted(uint256 indexed depositId, address indexed committer);
+    event DepositClaimed(uint256 indexed depositId, address indexed claimer);
 
-        bytes32 depositId = keccak256(abi.encodePacked(msg.sender, token, amount, passphraseHash, unlockTime));
-
-        deposits[depositId] = Deposit({
-            depositor: msg.sender,
-            token: token,
-            amount: amount,
-            passphraseHash: passphraseHash,
-            unlockTime: unlockTime,
-            claimed: false
-        });
-
-        depositorDeposits[msg.sender].push(depositId);
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
-
-        emit Deposited(msg.sender, token, amount, depositId, unlockTime);
+    constructor() {
+        nextDepositId = 1;
     }
 
-    function claim(bytes32 depositId, bytes32 claimHash) external {
+    function createDeposit(
+        address token,
+        uint256 amount,
+        bytes32 passphraseHash
+    ) external nonReentrant returns (uint256) {
+        require(amount > 0, "Amount must be greater than 0");
+        require(token != address(0), "Invalid token address");
+
+        uint256 depositId = nextDepositId++;
+
+        Deposit storage newDeposit = deposits[depositId];
+        newDeposit.depositor = msg.sender;
+        newDeposit.token = token;
+        newDeposit.amount = amount;
+        newDeposit.passphraseHash = passphraseHash;
+        newDeposit.claimed = false;
+
+        // Transfer tokens from sender to contract
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        emit DepositCreated(depositId, msg.sender, token, amount);
+        return depositId;
+    }
+
+    function submitCommit(
+        uint256 depositId,
+        bytes32 commitHash
+    ) external nonReentrant {
         Deposit storage deposit = deposits[depositId];
-        require(deposit.amount > 0, "No deposit found");
-        if (deposit.unlockTime != 0) {
-            require(block.timestamp >= deposit.unlockTime, "Vault is locked");
-        }
-        require(!deposit.claimed, "Already claimed");
+        require(!deposit.claimed, "Deposit already claimed");
 
-        claims[depositId] = ClaimRequest({
-            claimant: msg.sender,
-            claimHash: claimHash,
-            exists: true
-        });
-        console.log("Solidity Claim Logs");
-        console.logBytes32(claimHash);
+        // Each address can have their own commit
+        CommitInfo storage commit = deposit.commits[msg.sender];
 
-        emit ClaimInitiated(msg.sender, depositId, claimHash);
+        // Allow overwriting own expired commit
+        require(commit.commitHash == bytes32(0) || block.timestamp > commit.commitDeadline,
+            "Your previous commit is still valid");
+
+        commit.commitHash = commitHash;
+        // Start the window after MIN_COMMIT_DELAY
+        commit.commitDeadline = block.timestamp + COMMIT_DURATION;
+
+        emit CommitSubmitted(depositId, msg.sender);
     }
 
-    function revealClaim(bytes32 depositId, string memory passphrase, address destination) external {
+    function reveal(
+        uint256 depositId,
+        string calldata passphrase,
+        bytes32 nonce
+    ) external nonReentrant {
         Deposit storage deposit = deposits[depositId];
-        ClaimRequest storage claimRequest = claims[depositId];
+        require(!deposit.claimed, "Deposit already claimed");
 
-        require(claimRequest.exists, "No claim found");
-        require(!deposit.claimed, "Already claimed");
-        require(keccak256(abi.encodePacked(passphrase)) == deposit.passphraseHash, "Invalid passphrase");
-        console.logBytes32(keccak256(abi.encodePacked(passphrase, destination)));
+        CommitInfo storage commit = deposit.commits[msg.sender];
+        require(commit.commitHash != bytes32(0), "No commit found");
+        require(block.timestamp <= commit.commitDeadline, "Commit expired");
+        // Add minimum delay check
+        require(block.timestamp >= commit.commitDeadline - COMMIT_DURATION + MIN_COMMIT_DELAY,
+            "Must wait minimum time after commit");
 
-        require(keccak256(abi.encodePacked(passphrase, destination)) == claimRequest.claimHash, "Invalid reveal");
+        // Verify the commit hash
+        bytes32 computedCommitHash = keccak256(abi.encodePacked(passphrase, nonce, msg.sender));
+        require(computedCommitHash == commit.commitHash, "Invalid commit");
+
+        // Verify the passphrase
+        bytes32 computedPassphraseHash = keccak256(abi.encodePacked(passphrase));
+        require(computedPassphraseHash == deposit.passphraseHash, "Invalid passphrase");
 
         deposit.claimed = true;
-        uint256 amount = deposit.amount;
-        deposit.amount = 0;
 
-        IERC20(deposit.token).transfer(destination, amount);
+        // Transfer tokens to claimer
+        IERC20(deposit.token).safeTransfer(msg.sender, deposit.amount);
 
-        emit Claimed(destination, deposit.token, amount, depositId);
+        emit DepositClaimed(depositId, msg.sender);
     }
 
-    function refund(bytes32 depositId) external {
-        Deposit storage deposit = deposits[depositId];
-        require(deposit.amount > 0, "No tokens to refund");
-        require(msg.sender == deposit.depositor, "Not authorized");
-        require(!deposit.claimed, "Already claimed");
-
-        uint256 amount = deposit.amount;
-        deposit.amount = 0;
-
-        IERC20(deposit.token).transfer(msg.sender, amount);
-
-        emit Refunded(msg.sender, deposit.token, amount, depositId);
-    }
-
-    function getDepositorDeposits(address depositor) external view returns (bytes32[] memory) {
-        return depositorDeposits[depositor];
-    }
-
-    function getDepositDetails(bytes32 depositId) external view returns (
+    // Update view function to check deposit details
+    function getDeposit(uint256 depositId, address committer) external view returns (
         address depositor,
         address token,
         uint256 amount,
-        bytes32 passphraseHash,
-        uint256 unlockTime,
-        bool claimed
+        bool claimed,
+        uint256 commitDeadline,
+        bytes32 commitHash
     ) {
         Deposit storage deposit = deposits[depositId];
+        CommitInfo storage commit = deposit.commits[committer];
         return (
             deposit.depositor,
             deposit.token,
             deposit.amount,
-            deposit.passphraseHash,
-            deposit.unlockTime,
-            deposit.claimed
+            deposit.claimed,
+            commit.commitDeadline,
+            commit.commitHash
         );
     }
 }
