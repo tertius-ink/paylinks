@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
-
 import "hardhat/console.sol";
 
 interface IERC20 {
@@ -10,20 +9,28 @@ interface IERC20 {
 }
 
 contract PassphraseVault {
-
     struct Deposit {
         address depositor;
         address token;
         uint256 amount;
         bytes32 passphraseHash;
         uint256 unlockTime;
+        bool claimed; // Prevent re-entrancy
+    }
+
+    struct ClaimRequest {
+        address claimant;
+        bytes32 claimHash;
+        bool exists;
     }
 
     mapping(bytes32 => Deposit) public deposits;
+    mapping(bytes32 => ClaimRequest) public claims;
     mapping(address => bytes32[]) public depositorDeposits;
 
     event Deposited(address indexed depositor, address indexed token, uint256 amount, bytes32 indexed depositId, uint256 unlockTime);
-    event Claimed(address indexed collector, address indexed token, uint256 amount, bytes32 indexed depositId);
+    event ClaimInitiated(address indexed claimant, bytes32 indexed depositId, bytes32 claimHash);
+    event Claimed(address indexed destination, address indexed token, uint256 amount, bytes32 indexed depositId);
     event Refunded(address indexed depositor, address indexed token, uint256 amount, bytes32 indexed depositId);
 
     function deposit(address token, uint256 amount, string memory passphrase, uint256 unlockTime) external {
@@ -37,70 +44,65 @@ contract PassphraseVault {
             token: token,
             amount: amount,
             passphraseHash: passphraseHash,
-            unlockTime: unlockTime
+            unlockTime: unlockTime,
+            claimed: false
         });
 
         depositorDeposits[msg.sender].push(depositId);
-
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
         emit Deposited(msg.sender, token, amount, depositId, unlockTime);
     }
 
-    function claim(bytes32 depositId, string memory passphrase) external {
+    function claim(bytes32 depositId, bytes32 claimHash) external {
         Deposit storage deposit = deposits[depositId];
-        require(deposit.amount > 0, "No tokens to claim");
-        require(block.timestamp >= deposit.unlockTime, "Vault is locked");
-        require(keccak256(abi.encodePacked(passphrase)) == deposit.passphraseHash, "Invalid passphrase");
-
-        uint256 amount = deposit.amount;
-        address token = deposit.token;
-        deposit.amount = 0;
-
-        IERC20(token).transfer(msg.sender, amount);
-
-        emit Claimed(msg.sender, token, amount, depositId);
-    }
-
-    function claimWithSignature(bytes32 depositId, uint8 v, bytes32 r, bytes32 s) external {
-        Deposit storage deposit = deposits[depositId];
-        console.log("Solidity Logs");
-        console.logBytes32(depositId);
         require(deposit.amount > 0, "No deposit found");
         require(block.timestamp >= deposit.unlockTime, "Vault is locked");
+        require(!deposit.claimed, "Already claimed");
 
-        // Add the Ethereum prefix to the message to match what was signed off-chain
-        bytes32 messageHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", depositId));
+        claims[depositId] = ClaimRequest({
+            claimant: msg.sender,
+            claimHash: claimHash,
+            exists: true
+        });
+        console.log("Solidity Claim Logs");
+        console.logBytes32(claimHash);
 
-        // Verify signature
-        address signer = ecrecover(messageHash, v, r, s);
-        console.log(v);
-        console.logBytes32(r);
-        console.logBytes32(s);
-        console.log(signer);
-        require(signer == deposit.depositor, "Invalid signature");
+        emit ClaimInitiated(msg.sender, depositId, claimHash);
+    }
 
+    function revealClaim(bytes32 depositId, string memory passphrase, address destination) external {
+        Deposit storage deposit = deposits[depositId];
+        ClaimRequest storage claimRequest = claims[depositId];
+
+        require(claimRequest.exists, "No claim found");
+        require(!deposit.claimed, "Already claimed");
+        require(keccak256(abi.encodePacked(passphrase)) == deposit.passphraseHash, "Invalid passphrase");
+        console.logBytes32(keccak256(abi.encodePacked(passphrase, destination)));
+
+        require(keccak256(abi.encodePacked(passphrase, destination)) == claimRequest.claimHash, "Invalid reveal");
+
+        deposit.claimed = true;
         uint256 amount = deposit.amount;
-        address token = deposit.token;
         deposit.amount = 0;
 
-        IERC20(token).transfer(msg.sender, amount);
+        IERC20(deposit.token).transfer(destination, amount);
 
-        emit Claimed(msg.sender, token, amount, depositId);
+        emit Claimed(destination, deposit.token, amount, depositId);
     }
 
     function refund(bytes32 depositId) external {
         Deposit storage deposit = deposits[depositId];
         require(deposit.amount > 0, "No tokens to refund");
         require(msg.sender == deposit.depositor, "Not authorized");
+        require(!deposit.claimed, "Already claimed");
 
         uint256 amount = deposit.amount;
-        address token = deposit.token;
         deposit.amount = 0;
 
-        IERC20(token).transfer(msg.sender, amount);
+        IERC20(deposit.token).transfer(msg.sender, amount);
 
-        emit Refunded(msg.sender, token, amount, depositId);
+        emit Refunded(msg.sender, deposit.token, amount, depositId);
     }
 
     function getDepositorDeposits(address depositor) external view returns (bytes32[] memory) {
