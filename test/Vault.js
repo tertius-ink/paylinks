@@ -125,6 +125,40 @@ describe("PassphraseVault", function () {
     .to.be.revertedWith("Invalid reveal");
   });
 
+
+  it("attacker front run fails, deposit goes to intended user", async function () {
+    const amount = ethers.parseEther("10");
+    const unlockTime = (await time.latest()) + 3600; // 1 hour from now
+    const badPassphrase = "badpassword";
+
+    await vault.connect(depositor).deposit(this.tokenAddress, amount, passphrase, unlockTime);
+    const deposit = await vault.getDepositorDeposits(await depositor.getAddress());
+    console.log("User Deposit : ", deposit);
+
+    await time.increaseTo(unlockTime + 1);
+
+    // Step 1: Submit claim hash with bad passphrase
+    const claimHash = ethers.keccak256(
+      ethers.concat([
+        ethers.toUtf8Bytes(passphrase), 
+        ethers.getBytes(await recipient.getAddress())
+      ])
+    );
+
+    console.log("Generated Good Claim Hash : ", claimHash);
+
+    await vault.connect(recipient).claim(deposit[0], claimHash);
+
+    // Step 2: Attacker front runs the claim
+    const recipientBalanceBefore = await token.balanceOf(await recipient.getAddress());
+    await vault.connect(attacker).revealClaim(deposit[0], passphrase, recipient.getAddress());
+
+    const recipientBalanceAfter = await token.balanceOf(await recipient.getAddress());
+    console.log("Recipient Balance Changes : ", recipientBalanceBefore, recipientBalanceAfter);
+
+    expect(recipientBalanceAfter).to.be.greaterThan(recipientBalanceBefore);
+  });
+
   it("should allow depositor to refund before claim", async function () {
     const amount = ethers.parseEther("10");
     const unlockTime = (await time.latest()) + 3600;
