@@ -25,8 +25,8 @@ contract PassphraseVault is ReentrancyGuard {
     mapping(uint256 => Deposit) public deposits;
     uint256 public nextDepositId;
 
-    // Add minimum commit delay
-    uint256 public constant MIN_COMMIT_DELAY = 2 minutes;
+    // Change MIN_COMMIT_DELAY to 1 block minimum
+    uint256 public constant MIN_COMMIT_DELAY = 1;  // 1 block
     uint256 public constant COMMIT_DURATION = 10 minutes;
 
     event DepositCreated(
